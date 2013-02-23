@@ -19,7 +19,7 @@
     3;
 };")
 
-(test-ps-js symbol-conversion-1
+(test-ps-js (symbol-conversion-1 :suppress-source-maps? t) ; because # scares the reader
   !?#@%
   "bangwhathashatpercent;")
 

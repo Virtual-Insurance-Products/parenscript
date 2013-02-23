@@ -204,7 +204,7 @@ CL environment)."
                          (lookup-macro-def form *symbol-macro-env*))
                     (gethash form *symbol-macro-toplevel*))) ;; hack
            (and (consp form) (lookup-macro-def (car form) *macro-env*)))
-       (values (ps-macroexpand (funcall it form)) t)
+       (values (ps-macroexpand (extentify (xtent form) (funcall it form))) t)
        form))
 
 (defun ps-macroexpand (form)
@@ -255,24 +255,26 @@ form, FORM, returns the new value for *compilation-level*."
                   (if expanded?
                       (ps-compile expansion)
                       ,@body))))
-    (typecase form
-      ((or null number string character)
-       form)
-      (vector
-       (ps-compile `(quote ,(coerce form 'list))))
-      (symbol
-       (try-expanding form form))
-      (cons
-       (try-expanding form
-         (let ((*compilation-level*
-                (adjust-compilation-level form *compilation-level*)))
-           (if (special-form? form)
-               (compile-special-form form)
-               `(ps-js:funcall
-                 ,(if (symbolp (car form))
-                      (maybe-rename-local-function (car form))
-                      (compile-expression (car form)))
-                 ,@(mapcar #'compile-expression (cdr form))))))))))
+    (extentify
+     (xtent form)
+     (typecase form
+       ((or null number string character)
+        form)
+       (vector
+        (ps-compile `(quote ,(coerce form 'list))))
+       (symbol
+        (try-expanding form form))
+       (cons
+        (try-expanding form
+          (let ((*compilation-level*
+                 (adjust-compilation-level form *compilation-level*)))
+            (if (special-form? form)
+                (compile-special-form form)
+                `(ps-js:funcall
+                  ,(if (symbolp (car form))
+                       (maybe-rename-local-function (car form))
+                       (compile-expression (car form)))
+                  ,@(mapcar #'compile-expression (cdr form)))))))))))
 
 (defun compile-statement (form)
   (let ((compile-expression? nil))

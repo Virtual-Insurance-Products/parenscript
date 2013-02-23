@@ -27,18 +27,21 @@
 
 (define-statement-operator switch (test-expr &rest clauses)
   `(ps-js:switch ,(compile-expression test-expr)
-     ,@(loop for (val . body) in clauses collect
+     ,@(loop :for clause :in clauses :collect
+         (destructuring-bind (val . body) clause
+           (extentify
+            (xtent clause)
             (cons (if (eq val 'default)
                       'ps-js:default
                       (let ((in-case? t))
                         (compile-expression val)))
                   (mapcan (lambda (x)
                             (let* ((in-case? t)
-                                   (exp      (compile-statement x)))
+                                   (exp (compile-statement x)))
                               (if (and (listp exp) (eq 'ps-js:block (car exp)))
                                   (cdr exp)
                                   (list exp))))
-                          body)))))
+                          body)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; objects
@@ -46,20 +49,22 @@
 (define-expression-operator create (&rest arrows)
   `(ps-js:object
     ,@(loop for (key val-expr) on arrows by #'cddr collecting
-           (cons (cond ((and (symbolp key) (reserved-symbol-p key))
-                        (reserved-symbol-p key))
-                       ((or (stringp key) (numberp key) (symbolp key))
-                        key)
-                       ((and (consp key)
-                             (eq 'quote (first  key))
-                             (symbolp   (second key))
-                             (null      (third  key)))
-                        (symbol-to-js-string (second key)))
-                       (t
-                        (error
-                         "Slot key ~s is not one of symbol, string or number."
-                         key)))
-                 (compile-expression val-expr)))))
+            (cons (extentify
+                   (xtent key)
+                   (cond ((and (symbolp key) (reserved-symbol-p key))
+                          (reserved-symbol-p key))
+                         ((or (stringp key) (numberp key) (symbolp key))
+                          key)
+                         ((and (consp key)
+                               (eq 'quote (first  key))
+                               (symbolp   (second key))
+                               (null      (third  key)))
+                          (symbol-to-js-string (second key)))
+                         (t
+                          (error
+                           "Slot key ~s is not one of symbol, string or number."
+                           key))))
+                  (compile-expression val-expr)))))
 
 (define-expression-operator %js-getprop (obj slot)
   (let ((expanded-slot (ps-macroexpand slot))
@@ -68,8 +73,8 @@
              (eq 'quote (car expanded-slot)))
         (aif (or (reserved-symbol-p (second expanded-slot))
                  (and (keywordp (second expanded-slot)) (second expanded-slot)))
-             `(ps-js:aref ,obj ,it)
-             `(ps-js:getprop ,obj ,(second expanded-slot)))
+             `(ps-js:aref ,obj ,(extentify (xtent expanded-slot) it))
+             `(ps-js:getprop ,obj ,(extentify (xtent expanded-slot) (second expanded-slot))))
         `(ps-js:aref ,obj ,(compile-expression slot)))))
 
 (defpsmacro getprop (obj &rest slots)
@@ -106,7 +111,7 @@
   (let ((value (ps-macroexpand value)))
     (if (and (listp value) (eq 'progn (car value)))
         (ps-compile `(progn ,@(butlast (cdr value))
-                            (var ,name ,(car (last value)))))
+                            ,`(var ,name ,(car (last value)))))
         `(ps-js:var ,(ps-macroexpand name)
                     ,@(when value? (list (compile-expression value) docstr))))))
 
@@ -118,14 +123,16 @@
 (define-statement-operator for (init-forms cond-forms step-forms &body body)
   (let ((init-forms (make-for-vars/inits init-forms)))
     `(ps-js:for ,init-forms
-                ,(mapcar #'compile-expression cond-forms)
-                ,(mapcar #'compile-expression step-forms)
+                ,(extentify (xtent cond-forms) (mapcar #'compile-expression cond-forms))
+                ,(extentify (xtent step-forms) (mapcar #'compile-expression step-forms))
                 ,(compile-loop-body (mapcar #'car init-forms) body))))
 
-(define-statement-operator for-in ((var object) &rest body)
-  `(ps-js:for-in ,(compile-expression var)
-                 ,(compile-expression object)
-                 ,(compile-loop-body (list var) body)))
+(define-statement-operator for-in (pair &rest body)
+  (destructuring-bind (var object) pair
+    `(ps-js:for-in ,(extentify (xtent pair)
+                               (list (compile-expression var)
+                                     (compile-expression object)))
+                   ,(compile-loop-body (list var) body))))
 
 (define-statement-operator while (test &rest body)
   `(ps-js:while ,(compile-expression test)
@@ -137,19 +144,24 @@
 ;;; misc
 
 (define-statement-operator try (form &rest clauses)
-  (let ((catch   (cdr (assoc :catch clauses)))
-        (finally (cdr (assoc :finally clauses))))
-    (assert (not (cdar catch)) ()
-            "Sorry, currently only simple catch forms are supported.")
+  (let* ((tagged-catch (assoc :catch clauses))
+         (catch (cdr tagged-catch))
+         (tagged-finally (assoc :finally clauses))
+         (finally (cdr tagged-finally)))
     (assert (or catch finally) ()
             "Try form should have either a catch or a finally clause or both.")
-    `(ps-js:try
-      ,(compile-statement `(progn ,form))
-      :catch ,(when catch
-                    (list (caar catch)
-                          (compile-statement `(progn ,@(cdr catch)))))
-      :finally ,(when finally
-                      (compile-statement `(progn ,@finally))))))
+    (let ((err-form (car catch)))
+      (assert (not (cdr err-form)) ()
+              "Sorry, currently only simple catch forms are supported.")
+      `(ps-js:try
+        ,(compile-statement `(progn ,form))
+        ,(when catch
+               (extentify (xtent tagged-catch)
+                          (list (extentify (xtent err-form) (car err-form))
+                                (compile-statement `(progn ,@(cdr catch))))))
+        ,(when finally
+               (extentify (xtent tagged-finally)
+                          (compile-statement `(progn ,@finally))))))))
 
 (define-expression-operator regex (regex)
   `(ps-js:regex ,(string regex)))
@@ -179,7 +191,7 @@
 (defpsmacro [] (&rest args)
   `(array ,@(mapcar (lambda (arg)
                       (if (and (consp arg) (not (equal '[] (car arg))))
-                          (cons '[] arg)
+                          (extentify (xtent arg) (cons '[] arg))
                           arg))
                     args)))
 

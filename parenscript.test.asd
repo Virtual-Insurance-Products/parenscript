@@ -9,5 +9,6 @@
                                      (:file "test")
                                      (:file "output-tests")
                                      (:file "package-system-tests")
-                                     (:file "eval-tests"))))
+                                     (:file "eval-tests")
+                                     (:file "srcmap-tests"))))
   :depends-on (:parenscript :eos :cl-js))

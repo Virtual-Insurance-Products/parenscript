@@ -15,6 +15,7 @@
                          (:file "js-ir-package")
                          (:file "utils")
                          (:file "namespace")
+                         (:file "source-mappings")
                          (:file "compiler")
                          (:file "printer")
                          (:file "compilation-interface")

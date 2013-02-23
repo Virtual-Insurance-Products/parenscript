@@ -58,10 +58,15 @@ Syntax of key spec:
                                `(progn
                                   (var ,suppl (not (eql ,name undefined)))
                                   ,@(when value
-                                          `((when (not ,suppl) (setf ,name ,value))))))
+                                          (list
+                                           (extentify
+                                            (xtent opt-spec)
+                                            `(when (not ,suppl) (setf ,name ,value)))))))
                               (value
-                               `(when (eql ,name undefined)
-                                  (setf ,name ,value))))))
+                               (extentify
+                                (xtent opt-spec)
+                                `(when (eql ,name undefined)
+                                   (setf ,name ,value)))))))
                     optionals))
            (key-forms
             (when keys?
@@ -71,7 +76,11 @@ Syntax of key spec:
                    (lambda (k)
                      (multiple-value-bind (var init-form keyword-str suppl)
                          (parse-key-spec k)
-                       (push `(var ,var ,@(when init-form `((if (undefined ,var) ,init-form ,var)))) defaults)
+                       (push (extentify
+                              (xtent k)
+                              `(var ,var ,@(when init-form
+                                                 `((if (undefined ,var) ,init-form ,var)))))
+                             defaults)
                        (when suppl (push `(var ,suppl) defaults))
                        (push `(,keyword-str
                                (setf ,var (aref arguments (1+ ,n))
@@ -97,7 +106,9 @@ Syntax of key spec:
                                    key-forms
                                    (awhen rest-form (list it))
                                    (if docstring (rest body) body))))
-      (values effective-args effective-body docstring))))
+      (values (extentify (xtent lambda-list) effective-args)
+              effective-body
+              docstring))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; common
@@ -203,13 +214,16 @@ Syntax of key spec:
        (ps-compile (with-lambda-scope `(,',special-op ,fn-defs ,@body)))))
 
 (defun compile-local-function-defs (fn-defs renames)
-  (loop for (fn-name . (args . body)) in fn-defs collect
-       (progn (when compile-expression?
-                (push (getf renames fn-name)
-                      *vars-needing-to-be-declared*))
-              (list (if compile-expression? 'ps-js:= 'ps-js:var)
-                    (getf renames fn-name)
-                    (compile-named-local-function fn-name args body)))))
+  (loop for fn-def in fn-defs collect
+        (destructuring-bind (fn-name . (args . body)) fn-def
+          (progn (when compile-expression?
+                   (push (getf renames fn-name)
+                         *vars-needing-to-be-declared*))
+                 (extentify
+                  (xtent fn-def)
+                  (list (if compile-expression? 'ps-js:= 'ps-js:var)
+                        (getf renames fn-name)
+                        (compile-named-local-function fn-name args body)))))))
 
 (define-expression-operator flet (fn-defs &rest body)
   (local-functions flet

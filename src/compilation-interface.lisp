@@ -35,7 +35,7 @@ which writes the resulting code to stream."
 bound, writes the output to *parenscript-stream*, otherwise returns a
 string."
   (let ((*psw-stream* (or *parenscript-stream* (make-string-output-stream))))
-    (parenscript-print (compile-statement `(progn ,@body)) t)
+    (parenscript-print (compile-statement (make-progn body)) t)
     (unless *parenscript-stream*
       (get-output-stream-string *psw-stream*))))
 
@@ -68,21 +68,27 @@ string."
 
 (defvar *ps-read-function* #'read)
 
-(defun ps-compile-stream (stream)
+(defun ps-compile-stream (stream &optional source-mapping?)
   "Reads (using the value of *ps-read-function*, #'read by default, as
 the read function) Parenscript forms from stream and compiles them as
 if by ps*. If *parenscript-stream* is bound, writes the output to
 *parenscript-stream*, otherwise and returns a string."
-  (let ((output-stream (or *parenscript-stream* (make-string-output-stream))))
+  (let ((output-stream (or *parenscript-stream* (make-string-output-stream)))
+        (*source-maps* nil))
     (let ((*compilation-level* :toplevel)
-          (*readtable* *readtable*)
+          (*text-extents* (when source-mapping? (make-hash-table :test 'eq)))
+          (*readtable* (if source-mapping?
+                           (make-extent-preserving-readtable *readtable*)
+                           *readtable*))
           (*package* *package*)
           (*parenscript-stream* output-stream)
           (eof '#:eof))
       (loop for form = (funcall *ps-read-function* stream nil eof)
             until (eq form eof) do (ps* form) (fresh-line *parenscript-stream*)))
-    (unless *parenscript-stream*
-      (get-output-stream-string output-stream))))
+    (values
+     (unless *parenscript-stream*
+       (get-output-stream-string output-stream))
+     *source-maps*)))
 
 (defun ps-compile-file (source-file &key (element-type 'character) (external-format :default))
   "Opens file as input stream and calls ps-compile-stream on it."

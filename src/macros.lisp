@@ -157,23 +157,26 @@
                       '(with label let flet labels macrolet symbol-macrolet progn)))
             (pop form))))
     (if progn-form
-        `(,progn-form
-          ,@(butlast form)
-          (multiple-value-bind ,vars
-              ,@(last form)
-            ,@body))
+        (extentify
+         (xtent form)
+         `(,progn-form
+           ,@(butlast form)
+           (multiple-value-bind ,vars
+               ,@(last form)
+             ,@body)))
         ;; assume function call
         (with-ps-gensyms (prev-mv)
           (let* ((fun-exp (car form))
                  (funobj (if (symbolp fun-exp)
                              fun-exp
-                             (ps-gensym "funobj"))))
+                             (ps-gensym "funobj")))
+                 (callable (extentify (xtent form) `(,funobj ,@(cdr form)))))
             `(let (,@(unless (symbolp fun-exp) `((,funobj ,fun-exp)))
                    (,prev-mv (if (undefined __PS_MV_REG)
                                  (setf __PS_MV_REG undefined)
                                  __PS_MV_REG)))
                (try
-                (let ((,(car vars) (,funobj ,@(cdr form))))
+                (let ((,(car vars) ,callable))
                   (destructuring-bind (&optional ,@(cdr vars))
                       (if (eql ,funobj (@ __PS_MV_REG :tag))
                           (@ __PS_MV_REG :values)
@@ -185,32 +188,34 @@
 
 (defpsmacro case (value &rest clauses)
   (let ((allowed-symbols '(t otherwise false %true)))
-    (labels ((make-switch-clause (val body more)
-               (cond ((listp val)
-                      (append (mapcar #'list (butlast val))
-                              (make-switch-clause
-                               (if (eq t (car (last val))) ;; literal 'true'
-                                   '%true
-                                   (car (last val)))
-                               body
-                               more)))
-                     ((and (symbolp val)
-                           (symbolp (ps-macroexpand-1 val))
-                           (not (keywordp val))
-                           (not (member val allowed-symbols)))
-                      (error "Parenscript only supports keywords, numbers, and string literals as keys in case clauses. ~S is a symbol in clauses ~S"
-                             val clauses))
-                     (t
-                      `((,(case val
-                                ((t otherwise) 'default)
-                                (%true          t)
-                                (t              (ps-macroexpand-1 val)))
-                          ,@body
-                          ,@(when more '(break))))))))
-      `(switch ,value ,@(mapcon (lambda (clause)
-                                  (make-switch-clause (car (first clause))
-                                                      (cdr (first clause))
-                                                      (rest clause)))
+    (labels ((make-switch-clause (clause more?)
+               (destructuring-bind (val . body) clause
+                 (cond ((listp val)
+                        (append (mapcar #'list (butlast val))
+                                (let ((val+ (if (eq t (car (last val))) ;; literal 'true'
+                                                '%true
+                                                (car (last val)))))
+                                  (make-switch-clause
+                                   (extentify
+                                    (xtent clause)
+                                    (cons (extentify (xtent val) val+) body)) more?))))
+                       ((and (symbolp val)
+                             (symbolp (ps-macroexpand-1 val))
+                             (not (keywordp val))
+                             (not (member val allowed-symbols)))
+                        (error "Parenscript only supports keywords, numbers, and string literals as keys in case clauses. ~S is a symbol in clauses ~S"
+                               val clauses))
+                       (t (let ((val+ (case val
+                                        ((t otherwise) 'default)
+                                        (%true          t)
+                                        (t              (ps-macroexpand-1 val)))))
+                            (list (extentify
+                                   (xtent clause)
+                                   `(,(extentify (xtent val) val+)
+                                      ,@body
+                                      ,@(when more? '(break)))))))))))
+      `(switch ,value ,@(mapcon (lambda (rest)
+                                  (make-switch-clause (car rest) (not (null (cdr rest)))))
                                 clauses)))))
 
 (defpsmacro when (test &rest body)
@@ -234,7 +239,7 @@ lambda-list::=
              `(defun% ,name ,lambda-list ,@body))
       (progn (assert (and (listp name) (= (length name) 2) (eq 'setf (car name))) ()
                      "(defun ~s ~s ...) needs to have a symbol or (setf symbol) for a name." name lambda-list)
-             `(defun-setf ,(second name) ,lambda-list ,@body))))
+             `(defun-setf ,(extentify (xtent name) (second name)) ,lambda-list ,@body))))
 
 ;;; defining setf expanders
 
@@ -247,7 +252,7 @@ lambda-list::=
     (setf (gethash name *setf-expanders*)
           (lambda (access-args store-form)
             `(,mangled-function-name ,store-form ,@access-args)))
-    `(defun ,mangled-function-name ,lambda-list ,@body)))
+    `(defun ,(extentify (xtent name) mangled-function-name) ,lambda-list ,@body)))
 
 ;;; slightly broken WRT lambda lists
 (defpsmacro defsetf-long (access-fn lambda-list (store-var) form)
@@ -261,7 +266,7 @@ lambda-list::=
                   access-fn-args
                 (let* ((,store-var (ps-gensym))
                        (gensymed-names (loop repeat ,(length var-bindings)
-                                          collecting (ps-gensym)))
+                                             collecting (ps-gensym)))
                        (gensymed-arg-bindings (mapcar #'list
                                                       gensymed-names
                                                       (list ,@var-bindings))))
@@ -284,13 +289,15 @@ lambda-list::=
 
 ;;; setf
 
-(defpsmacro setf (&rest args)
+(defpsmacro setf (&whole whole &rest args)
   (assert (evenp (length args)) ()
           "~s does not have an even number of arguments." `(setf ,args))
   `(progn ,@(loop for (place value) on args by #'cddr collect
-                 (aif (and (listp place) (gethash (car place) *setf-expanders*))
-                      (funcall it (cdr place) value)
-                      `(ps-assign ,place ,value)))))
+                 (extentify
+                  (or (xtent whole) (extent-union (list place value)))
+                  (aif (and (listp place) (gethash (car place) *setf-expanders*))
+                       (funcall it (cdr place) value)
+                       `(ps-assign ,place ,value ,(xtent whole)))))))
 
 (defpsmacro psetf (&rest args)
   (let ((places (loop for x in args by #'cddr collect x))
@@ -316,31 +323,41 @@ lambda-list::=
 ;;; iteration
 
 (defun do-make-iteration-bindings (decls)
-  (mapcar (lambda (x)
-            (cond ((atom x) x)
-                  ((endp (cdr x)) (list (car x)))
-                  (t (subseq x 0 2))))
-          decls))
+  (extentify
+   (xtent decls)
+   (mapcar (lambda (x)
+             (cond ((atom x) x)
+                   ((endp (cdr x)) x)
+                   (t (extentify (xtent x) (subseq x 0 2)))))
+           decls)))
+
+(defun do-make-end-tests (end-test)
+  (list (extentify (xtent end-test) `(not ,end-test))))
+
+(defun stepping-decls (decls)
+  (remove-if (lambda (x)
+               (or (atom x) (< (length x) 3)))
+             decls))
 
 (defun do-make-for-steps (decls)
-  (mapcar (lambda (x)
-            `(setf ,(first x) ,(third x)))
-          (remove-if (lambda (x)
-                       (or (atom x) (< (length x) 3)))
-                     decls)))
+  (extentify
+   (xtent decls)
+   (mapcar (lambda (x)
+             (extentify (xtent x) `(setf ,(first x) ,(third x))))
+           (stepping-decls decls))))
 
 (defun do-make-iter-psteps (decls)
-  `(psetq
-    ,@(mapcan (lambda (x)
-                (list (first x) (third x)))
-              (remove-if (lambda (x)
-                           (or (atom x) (< (length x) 3)))
-                         decls))))
+  (extentify
+   (xtent decls)
+   `(psetq
+     ,@(mapcan (lambda (x)
+                 (list (first x) (third x)))
+               (stepping-decls decls)))))
 
 (defpsmacro do* (decls (end-test &optional (result nil result?)) &body body)
   `(block nil
      (for ,(do-make-iteration-bindings decls)
-          ((not ,end-test))
+          ,(do-make-end-tests end-test)
           ,(do-make-for-steps decls)
           ,@body)
      ,@(when result? (list result))))
@@ -348,7 +365,9 @@ lambda-list::=
 (defpsmacro do (decls (end-test &optional (result nil result?)) &body body)
   `(block nil
      (let ,(do-make-iteration-bindings decls)
-       (for () ((not ,end-test)) ()
+       (for ()
+            ,(do-make-end-tests end-test)
+            ()
             ,@body
             ,(do-make-iter-psteps decls))
        ,@(when result? (list result)))))
@@ -368,8 +387,8 @@ lambda-list::=
            ,@(when introduce-array-var?
                    (list (list arrvar array)))
            (,idx 0 (1+ ,idx)))
-          ((>= ,idx (getprop ,arrvar 'length))
-           ,@(when result? (list result)))
+         ((>= ,idx (getprop ,arrvar 'length))
+          ,@(when result? (list result)))
        (setq ,var (aref ,arrvar ,idx))
        ,@body)))
 
@@ -408,9 +427,10 @@ lambda-list::=
                    (t `(,'destructuring-bind ,var (aref ,arr ,n) ,inner-body)))))))
 
 (defpsmacro destructuring-bind (bindings expr &body body)
-  (setf bindings (dot->rest bindings))
-  (let* ((arr (if (hoist-expr? bindings expr) (ps-gensym "_DB") expr))
-         (bound (destructuring-wrap arr 0 bindings (cons 'progn body))))
+  (let* ((bindings (dot->rest bindings))
+         (arr (if (hoist-expr? bindings expr) (ps-gensym "_DB") expr))
+         (bound (extentify (xtent bindings)
+                           (destructuring-wrap arr 0 bindings (cons 'progn body)))))
     (cond ((eq arr expr) bound)
           (t `(let ((,arr ,expr)) ,bound)))))
 

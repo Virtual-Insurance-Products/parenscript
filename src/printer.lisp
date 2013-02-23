@@ -29,8 +29,11 @@ vice-versa.")
     (declare (special %psw-accumulator))
     (with-standard-io-syntax
       (if (and (listp form) (eq 'ps-js:block (car form))) ; ignore top-level block
-          (loop for (statement . remaining) on (cdr form) do
-                (ps-print statement) (psw #\;) (when remaining (psw #\Newline)))
+          (do-source-map (xtent form)
+            (loop for (statement . remaining) on (cdr form) do
+                  (ps-print statement)
+                  (psw #\;)
+                  (when remaining (psw #\Newline))))
           (ps-print form)))
     (unless immediate?
       (reverse (cons (get-output-stream-string *psw-stream*)
@@ -96,7 +99,8 @@ vice-versa.")
       (psw (symbol-to-js-string s))))
 
 (defmethod ps-print ((compiled-form cons))
-  (ps-print% (car compiled-form) (cdr compiled-form)))
+  (do-source-map (xtent compiled-form)
+    (ps-print% (car compiled-form) (cdr compiled-form))))
 
 (defun newline-and-indent (&optional indent-spaces)
   (if *ps-print-pretty*
@@ -257,10 +261,16 @@ vice-versa.")
   (print-fun-def name args body-block))
 
 (defun print-fun-def (name args body)
-  (format *psw-stream* "function ~:[~;~A~](" name (symbol-to-js-string name))
-  (loop for (arg . remaining) on args do
-        (psw (symbol-to-js-string arg)) (when remaining (psw ", ")))
-  (psw ") ")
+  (format *psw-stream* "function ")
+  (when name
+    (do-source-map (xtent name)
+      (format *psw-stream* "~A" (symbol-to-js-string name))))
+  (do-source-map (xtent args)
+    (psw "(")
+    (loop for (arg . remaining) on args do
+          (psw (symbol-to-js-string arg)) (when remaining (psw ", ")))
+    (psw ")"))
+  (psw " ")
   (ps-print body))
 
 (defprinter ps-js:object (&rest slot-defs)
@@ -285,7 +295,9 @@ vice-versa.")
      (psw "}"))))
 
 (defprinter ps-js:getprop (obj slot)
-  (print-op-argument op obj)"."(psw (symbol-to-js-string slot)))
+  (print-op-argument op obj) "."
+  (do-source-map (xtent slot)
+    (psw (symbol-to-js-string slot))))
 
 (defprinter ps-js:if (test consequent &rest clauses)
   "if (" (ps-print test) ") "
@@ -319,21 +331,33 @@ vice-versa.")
 ;;; iteration
 (defprinter ps-js:for (vars tests steps body-block)
   "for ("
-  (loop for ((var-name . var-init) . remaining) on vars
-     for decl = "var " then "" do
-       (psw decl (symbol-to-js-string var-name) " = ") (ps-print var-init)
-       (when remaining (psw ", ")))
+  (do-source-map (xtent vars)
+    (loop for (var . remaining) on vars
+          for decl = "var " then "" do
+          (destructuring-bind (name . init) var
+            (do-source-map (xtent var)
+              (psw decl (symbol-to-js-string name) " = ")
+              (ps-print init)))
+          (when remaining (psw ", "))))
   "; "
-  (loop for (test . remaining) on tests do
-       (ps-print test) (when remaining (psw ", ")))
+  (do-source-map (xtent tests)
+    (loop for (test . remaining) on tests do
+          (ps-print test)
+          (when remaining (psw ", "))))
   "; "
-  (loop for (step . remaining) on steps do
-       (ps-print step) (when remaining (psw ", ")))
+  (do-source-map (xtent steps)
+    (loop for (step . remaining) on steps do
+          (ps-print step)
+          (when remaining (psw ", "))))
   ") "
   (ps-print body-block))
 
-(defprinter ps-js:for-in (var object body-block)
-  "for (var "(ps-print var)" in "(ps-print object)") "
+(defprinter ps-js:for-in (pair body-block)
+  "for "
+  (destructuring-bind (var object) pair
+    (do-source-map (xtent pair)
+      (psw "(var ") (ps-print var) (psw " in ") (ps-print object) (psw ")")))
+  " "
   (ps-print body-block))
 
 (defprinter (ps-js:with ps-js:while) (expression body-block)
@@ -349,23 +373,28 @@ vice-versa.")
                  (ps-print statement)
                  (psw #\;))
            (decf *indent-level*)))
-    (loop for (val . statements) in clauses do
-         (newline-and-indent)
-         (if (eq val 'ps-js:default)
-             (progn (psw "default:")
-                    (print-body statements))
-             (progn (psw "case ") (ps-print val) (psw #\:)
-                    (print-body statements)))))
+    (loop for clause in clauses do
+          (destructuring-bind (val . statements) clause
+            (newline-and-indent)
+            (do-source-map (xtent clause)
+              (if (eq val 'ps-js:default)
+                  (progn (psw "default:")
+                         (print-body statements))
+                  (progn (psw "case ") (ps-print val) (psw #\:)
+                         (print-body statements)))))))
   (newline-and-indent)
   "}")
 
-(defprinter ps-js:try (body-block &key catch finally)
+(defprinter ps-js:try (body-block catch finally)
   "try "(ps-print body-block)
   (when catch
-    (psw " catch ("(symbol-to-js-string (first catch))") ")
-    (ps-print (second catch)))
+    (do-source-map (xtent catch)
+      (psw " catch ("(symbol-to-js-string (first catch))") ")
+      (ps-print (second catch))))
   (when finally
-    (psw " finally ") (ps-print finally)))
+    (do-source-map (xtent finally)
+      (psw " finally ")
+      (ps-print finally))))
 
 (defprinter ps-js:regex (regex)
   (let ((slash (unless (and (> (length regex) 0) (char= (char regex 0) #\/)) "/")))
